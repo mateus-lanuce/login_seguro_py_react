@@ -3,6 +3,8 @@ import secrets
 from passlib.context import CryptContext
 import jwt
 from datetime import datetime, timedelta, timezone
+from fastapi import Request, HTTPException, status
+import redis.asyncio as redis
 
 # Password hashing configuration (Bcrypt automatically generates and uses a unique salt per user)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -18,6 +20,10 @@ if not JWT_SECRET_KEY:
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 TEMP_TOKEN_EXPIRE_MINUTES = 3
+
+# Redis client for token blacklisting and other ephemeral state
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
@@ -51,3 +57,18 @@ def verify_token(token: str) -> dict:
 
 def generate_csrf_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+async def verify_csrf(request: Request):
+    """FastAPI dependency to verify CSRF using the double-submit cookie pattern.
+
+    Expects the client to send the CSRF token in a `csrf_token` cookie and
+    in the `X-CSRF-Token` request header. Raises HTTP 403 on mismatch/missing.
+    """
+    header_token = request.headers.get("x-csrf-token")
+    cookie_token = request.cookies.get("csrf_token")
+
+    if not header_token or not cookie_token or header_token != cookie_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+    return True
